@@ -176,9 +176,23 @@ pub fn contents_title(language: &str) -> &'static str {
         "es" | "pt" => "Índice",
         "it" => "Indice",
         "ja" => "目次",
+        "ko" => "차례",
         "zh" => "目录",
         _ => "Contents",
     }
+}
+
+/// The document's language as a BCP 47 tag: its [Basic Paragraph]'s (`ko` for Korean), `en` when
+/// that names no language known here. The exports' language when none is given.
+pub fn document_language(doc: &Document) -> &'static str {
+    let (_, basic) = doc.styles.resolve_para_style(story::BASIC_PARAGRAPH);
+    designcraft_doc::language_tag(&basic.language).unwrap_or("en")
+}
+
+/// Whether text tagged `tag` needs no language of its own inside `context`: the same tag, or a
+/// regional variant of a context that names no region (`en-US` inside `en`).
+fn same_language(tag: &str, context: &str) -> bool {
+    tag.eq_ignore_ascii_case(context) || (!context.contains('-') && tag.split('-').next().is_some_and(|p| p.eq_ignore_ascii_case(context)))
 }
 
 /// A page of a fixed-layout EPUB: its image (PNG), size in points and text (kept for search,
@@ -461,6 +475,10 @@ fn para_css(p: &ParaProps, base_size: f64, line_px: f64, out: &mut String) {
         line_px
     );
     out.push_str(if p.hyphenate { "hyphens: auto; -webkit-hyphens: auto; " } else { "hyphens: manual; " });
+    if p.korean_char_breaks {
+        // Korean set syllable by syllable: undo the keep-all of `:lang(ko)`.
+        out.push_str("word-break: normal; ");
+    }
 }
 
 /// The stylesheet for all paragraph and character styles.
@@ -488,6 +506,9 @@ fn stylesheet_with(doc: &Document, generics: &BTreeMap<String, String>, fonts: &
     css.push_str(
         "body { margin: 0 5%; font-size: 1em; }\nfigure { margin: 1em 0; text-align: center; }\nfigure img { max-width: 100%; }\nh1, h2, h3 { font-size: inherit; margin: 0; }\n",
     );
+    // Korean breaks lines between words, at the spaces, as the layout does (KLREQ); browsers and
+    // reading systems otherwise break between any two syllables.
+    css.push_str(":lang(ko) { word-break: keep-all; }\n");
     let (pc, cc) = (para_classes(st), char_classes(st));
     for ps in &st.paragraph {
         if ps.name == designcraft_doc::NO_PARA_STYLE {
@@ -630,6 +651,11 @@ struct StoryWriter<'a, 'f> {
     cc: BTreeMap<&'a str, String>,
     /// EPUB structural semantics (`epub:type`); plain HTML doesn't declare the namespace.
     epub: bool,
+    /// The book's language (BCP 47): paragraphs and runs in another one say so.
+    lang: String,
+    /// The document's own language ([`document_language`]): text in it is in the book's language,
+    /// so a book exported in another language doesn't label every untouched paragraph.
+    base: &'static str,
     /// Notes written so far, for unique element ids.
     footnote_ids: u32,
     endnote_ids: u32,
@@ -651,12 +677,14 @@ struct StoryWriter<'a, 'f> {
 }
 
 impl<'a, 'f> StoryWriter<'a, 'f> {
-    fn new(doc: &'a Document, epub: bool, img_src: Option<&'f dyn Fn(&str, &str, &[u8]) -> String>) -> Self {
+    fn new(doc: &'a Document, epub: bool, lang: &str, img_src: Option<&'f dyn Fn(&str, &str, &[u8]) -> String>) -> Self {
         StoryWriter {
             doc,
             pc: para_classes(&doc.styles),
             cc: char_classes(&doc.styles),
             epub,
+            lang: lang.to_string(),
+            base: document_language(doc),
             footnote_ids: 0,
             endnote_ids: 0,
             next_footnote: 1,
@@ -671,6 +699,21 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
 
     fn epub_type(&self, t: &str) -> String {
         if self.epub { format!(" epub:type=\"{t}\"") } else { String::new() }
+    }
+
+    /// The language text tagged `tag` (a BCP 47 tag, None when unknown) is in: its own when it
+    /// differs from the document's, else the book's.
+    fn effective_language(&self, tag: Option<&str>) -> String {
+        match tag {
+            Some(t) if !same_language(t, self.base) => t.to_string(),
+            _ => self.lang.clone(),
+        }
+    }
+
+    /// ` lang="…"` for text in language `tag`, and `xml:lang` too in EPUB's XHTML.
+    fn lang_attr(&self, tag: &str) -> String {
+        let tag = language_tag(tag);
+        if self.epub { format!(" xml:lang=\"{tag}\" lang=\"{tag}\"") } else { format!(" lang=\"{tag}\"") }
     }
 
     /// One document story: paragraphs, tables, and each footnote after the paragraph that refers
@@ -702,8 +745,11 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
             if !only_table || !lead.is_empty() {
                 // Export Tagging: the style's element and class.
                 let (tag, class) = export_mapping(&doc.styles, &pf.style, false, &self.pc);
-                let props = doc.styles.resolve_para(pf).0;
+                let (props, chars) = doc.styles.resolve_para(pf);
                 let rtl = props.direction == designcraft_doc::TextDirection::RightToLeft;
+                // The paragraph's language, said when it isn't the book's.
+                let para_lang = self.effective_language(designcraft_doc::language_tag(&chars.language));
+                let lang_attr = if same_language(&para_lang, &self.lang) { String::new() } else { self.lang_attr(&para_lang) };
                 let continues_pre = tag == "pre" && pre.as_ref() == Some(&(class.clone(), rtl));
                 if !continues_pre && pre.take().is_some() {
                     out.push_str("</pre>\n");
@@ -732,7 +778,7 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
                         Some(prefix) if depth == 0 && heading_level(tag).is_some() => format!(" id=\"{prefix}-p{pi}\""),
                         _ => String::new(),
                     };
-                    let _ = write!(out, "<{tag}{id} class=\"{}\"{}>", xml_attr(&class), if rtl { " dir=\"rtl\"" } else { "" });
+                    let _ = write!(out, "<{tag}{id} class=\"{}\"{lang_attr}{}>", xml_attr(&class), if rtl { " dir=\"rtl\"" } else { "" });
                 }
                 out.push_str(lead);
                 if lead.is_empty() && text.trim().is_empty() {
@@ -741,7 +787,7 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
                 lead = "";
                 let mut after = String::new();
                 if !only_table {
-                    self.runs(st, r, depth, out, &mut after);
+                    self.runs(st, r, &chars, &para_lang, depth, out, &mut after);
                 }
                 if tag == "pre" {
                     // Closed when the next paragraph isn't a line of the same block.
@@ -765,8 +811,19 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
         close_blocks(&mut list, &mut pre, out);
     }
 
-    /// The runs of paragraph `para` of `st`; footnotes go to `after`.
-    fn runs(&mut self, st: &Story, para: std::ops::Range<usize>, depth: usize, out: &mut String, after: &mut String) {
+    /// The runs of paragraph `para` of `st` (its character properties `chars`, its language
+    /// `para_lang`); footnotes go to `after`.
+    #[allow(clippy::too_many_arguments)]
+    fn runs(
+        &mut self,
+        st: &Story,
+        para: std::ops::Range<usize>,
+        chars: &designcraft_doc::CharProps,
+        para_lang: &str,
+        depth: usize,
+        out: &mut String,
+        after: &mut String,
+    ) {
         let doc = self.doc;
         for (rr, f) in st.runs() {
             let a = rr.start.max(para.start);
@@ -813,10 +870,17 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
             };
             let style = override_css(doc, &f.over);
             let style_attr = if style.is_empty() { String::new() } else { format!(" style=\"{}\"", xml_attr(&style)) };
-            if cls.is_empty() && style_attr.is_empty() {
+            let run_lang = designcraft_doc::language_tag(&doc.styles.resolve_char(chars, f).language);
+            let lang_attr = if run_lang == designcraft_doc::language_tag(&chars.language) {
+                String::new()
+            } else {
+                let l = self.effective_language(run_lang);
+                if same_language(&l, para_lang) { String::new() } else { self.lang_attr(&l) }
+            };
+            if cls.is_empty() && style_attr.is_empty() && lang_attr.is_empty() {
                 out.push_str(&t);
             } else {
-                let _ = write!(out, "<{ctag}{cls}{style_attr}>{t}</{ctag}>");
+                let _ = write!(out, "<{ctag}{cls}{style_attr}{lang_attr}>{t}</{ctag}>");
             }
         }
     }
@@ -1018,7 +1082,7 @@ fn run_text(doc: &Document, raw: &str) -> String {
 /// One story as XHTML: paragraphs, tables, and each footnote after the paragraph that refers to
 /// it. Endnote references link to the endnotes section that the full export ends with.
 pub fn story_html(doc: &Document, sid: StoryId) -> String {
-    StoryWriter::new(doc, true, None).story(sid, None)
+    StoryWriter::new(doc, true, document_language(doc), None).story(sid, None)
 }
 
 /// Where the EPUB body splits into chapter files: before each `h1`.
@@ -1276,10 +1340,10 @@ struct Body<'a> {
 }
 
 /// The content in reading order as HTML sections and figures; `img_src` names each image
-/// (a package path, or a data URI for single-file HTML).
-fn body_html<'a>(doc: &'a Document, epub: bool, img_src: &dyn Fn(&str, &str, &[u8]) -> String) -> Body<'a> {
+/// (a package path, or a data URI for single-file HTML); `lang` is the book's language.
+fn body_html<'a>(doc: &'a Document, epub: bool, lang: &str, img_src: &dyn Fn(&str, &str, &[u8]) -> String) -> Body<'a> {
     let order = reading_order(doc);
-    let mut writer = StoryWriter::new(doc, epub, Some(img_src));
+    let mut writer = StoryWriter::new(doc, epub, lang, Some(img_src));
     let mut body = String::new();
     let mut toc = toc_entries(doc, &order);
     for (k, b) in order.iter().enumerate() {
@@ -1326,7 +1390,7 @@ fn body_html<'a>(doc: &'a Document, epub: bool, img_src: &dyn Fn(&str, &str, &[u
 /// Placed and anchored images (not video or sound) without alt text, by asset name: they are exported as
 /// decorative (`alt=""`), which an export can report.
 pub fn images_without_alt(doc: &Document) -> Vec<String> {
-    body_html(doc, true, &|name, _, _| name.to_string()).no_alt
+    body_html(doc, true, document_language(doc), &|name, _, _| name.to_string()).no_alt
 }
 
 /// Options for [`export_html`].
@@ -1342,9 +1406,9 @@ pub struct HtmlOptions {
 /// document's stories and graphics in reading order.
 pub fn export_html(doc: &Document, opts: &HtmlOptions) -> String {
     let title = opts.title.clone().unwrap_or_else(|| doc.title.clone());
-    let language = opts.language.as_deref().unwrap_or("en");
+    let language = opts.language.as_deref().unwrap_or_else(|| document_language(doc));
     let lang = language_tag(language);
-    let body = body_html(doc, false, &|_, mime, data| format!("data:{mime};base64,{}", base64(data))).html;
+    let body = body_html(doc, false, lang, &|_, mime, data| format!("data:{mime};base64,{}", base64(data))).html;
     format!(
         "<!DOCTYPE html>\n<html lang=\"{lang}\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<meta name=\"generator\" content=\"DesignCraft\">\n<title>{}</title>\n<style>\nbody {{ max-width: 40em; margin: 2em auto; padding: 0 1em; }}\nfigure {{ margin: 1em 0; }} figure img {{ max-width: 100%; height: auto; }}\n{}</style>\n</head>\n<body>\n{body}</body>\n</html>\n",
         xml_text(&title),
@@ -1371,8 +1435,8 @@ pub fn export_epub(doc: &Document, opts: &EpubOptions) -> Result<Vec<u8>, EpubEr
     let title = opts.title.clone().unwrap_or_else(|| doc.title.clone());
     let id = identifier(doc, opts, &title);
     let modified = modified(doc, opts);
-    let Body { html: body, images, toc, .. } = body_html(doc, true, &|name, _, _| name.to_string());
     let lang = language_tag(&opts.language);
+    let Body { html: body, images, toc, .. } = body_html(doc, true, lang, &|name, _, _| name.to_string());
     // One file per chapter (split before each h1), so e-readers needn't load the whole book.
     let chapters: Vec<String> = split_chapters(&body)
         .into_iter()
@@ -1889,6 +1953,81 @@ mod tests {
             assert!(!classes[..k].contains(c), "class `{c}` shared: {classes:?}");
             assert_eq!(css.matches(&format!("p.{c} {{")).count(), 1, "one rule for `{c}`:\n{css}");
         }
+    }
+
+    /// A Korean book: its language comes from [Basic Paragraph] (`ko`), its table of contents is
+    /// 차례, and Korean breaks between words (`keep-all`) unless a style sets it syllable by
+    /// syllable.
+    #[test]
+    fn korean_books_are_korean_and_break_between_words() {
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 300.0, 100.0), lid, "한국어 문장은 띄어쓰기 단위로", ParaFormat::default())
+            .unwrap();
+        assert_eq!(document_language(&d), "en-US");
+        if let Some(basic) = d.styles_mut().paragraph.iter_mut().find(|s| s.name == story::BASIC_PARAGRAPH) {
+            basic.chars.language = Some("Korean".into());
+        }
+        d.styles_mut().paragraph.push(designcraft_doc::ParagraphStyle {
+            name: "Syllables".into(),
+            based_on: None,
+            next_style: None,
+            para: designcraft_doc::ParaAttrs { korean_char_breaks: Some(true), ..Default::default() },
+            chars: CharAttrs::default(),
+            shortcut: String::new(),
+        });
+        assert_eq!(document_language(&d), "ko");
+        let html = export_html(&d, &HtmlOptions::default());
+        assert!(html.contains("<html lang=\"ko\">") && html.contains(":lang(ko) { word-break: keep-all; }"), "{html}");
+        assert!(html.contains("<p class=\"basic-paragraph\">한국어"), "the book's own language isn't repeated: {html}");
+        let css = stylesheet(&d);
+        let rule = |sel: &str| css.lines().find(|l| l.starts_with(sel)).unwrap_or_default().to_string();
+        assert!(rule("p.syllables {").contains("word-break: normal;"), "{css}");
+        assert!(!rule("p.basic-paragraph {").contains("word-break"), "{css}");
+        let opts = EpubOptions { language: document_language(&d).into(), ..Default::default() };
+        let mut z = zip::ZipArchive::new(std::io::Cursor::new(export_epub(&d, &opts).unwrap())).unwrap();
+        let mut read = |path: &str| {
+            let mut s = String::new();
+            z.by_name(path).unwrap().read_to_string(&mut s).unwrap();
+            s
+        };
+        assert!(read("OEBPS/content.opf").contains("<dc:language>ko</dc:language>"));
+        assert!(read("OEBPS/nav.xhtml").contains("<h1>차례</h1>"));
+        assert_eq!(contents_title("ko-KR"), "차례");
+    }
+
+    /// Text in another language than the book's says so: `lang`, and `xml:lang` too in EPUB. A
+    /// regional variant of the book's language (`en-US` in an `en` book) needs nothing.
+    #[test]
+    fn text_in_another_language_says_so() {
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        d.styles_mut().paragraph.push(designcraft_doc::ParagraphStyle {
+            name: "Korean Body".into(),
+            based_on: None,
+            next_style: None,
+            para: designcraft_doc::ParaAttrs::default(),
+            chars: CharAttrs { language: Some("Korean".into()), ..Default::default() },
+            shortcut: String::new(),
+        });
+        let text = "English 한국어\n한국어 문단";
+        let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 300.0, 200.0), lid, text, ParaFormat::default()).unwrap();
+        let st = d.story_mut(sid).unwrap();
+        let ko = text.find('한').unwrap();
+        st.format_chars(ko..ko + "한국어".len(), |f| f.over.language = Some("Korean".into()));
+        st.paras[1].style = "Korean Body".into();
+        let html = export_html(&d, &HtmlOptions { language: Some("en".into()), ..Default::default() });
+        assert!(html.contains("English <span lang=\"ko\">한국어</span>"), "{html}");
+        assert!(html.contains("lang=\"ko\">한국어 문단</p>") && html.contains("class=\"korean-body\""), "{html}");
+        assert!(!html.contains("lang=\"en-US\""), "{html}");
+        // A book exported in another language: the untouched (English: USA) paragraph is in the
+        // book's language, the Korean ones still say so.
+        let html = export_html(&d, &HtmlOptions { language: Some("nl".into()), ..Default::default() });
+        assert!(html.contains("<html lang=\"nl\">") && html.contains("<p class=\"basic-paragraph\">English <span lang=\"ko\">"), "{html}");
+        // EPUB's XHTML, in the document's language (en-US).
+        let body = story_html(&d, sid);
+        assert!(body.contains("<span xml:lang=\"ko\" lang=\"ko\">한국어</span>"), "{body}");
+        assert!(body.contains("xml:lang=\"ko\" lang=\"ko\">한국어 문단</p>"), "{body}");
     }
 
     #[test]

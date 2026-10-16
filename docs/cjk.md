@@ -1,6 +1,6 @@
 # CJK typesetting plan
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** trivial (status line and revision history added; content unchanged in the 2026-10-10 review) · **Target:** Adobe InDesign 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-17 · **Change:** minor (EPUB/HTML: Korean language and word breaking) · **Target:** Adobe InDesign 2026
 
 Goal: the Chinese, Japanese and Korean typesetting that InDesign offers with its East Asian
 feature set (the "Japanese/CJK" feature set, `Feature Set Locale Setting` 257), so that a
@@ -184,7 +184,11 @@ Jidori, tsume, aki before and after, em-box alignment and the other leading mode
 - Numbering styles: kanji, full-width, circled, parenthesised.
 - Typographer's quotes per language (Simplified/Traditional Chinese, Korean).
 - Character count (Info panel) by CJK conventions.
-- EPUB/HTML: `writing-mode: vertical-rl`, `<ruby>`, `text-combine-upright`, `text-emphasis`.
+- EPUB/HTML: `writing-mode: vertical-rl`, `<ruby>`, `text-combine-upright`, `text-emphasis`. Done: the
+  book's language defaults to the document's ([Basic Paragraph]'s), text in another language than
+  the document's carries `lang` (and `xml:lang`), Korean breaks between words
+  (`:lang(ko) { word-break: keep-all }`, `word-break: normal` for styles set syllable by syllable)
+  and the Korean table of contents is titled 차례.
 - PDF: correct `ActualText` for ruby/warichu; vertical glyph placement as above.
 - IDML: every attribute below, import and export, round-trip tested.
 
@@ -292,6 +296,7 @@ Each follows what an InDesign user expects.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-17 | minor | EPUB/HTML: the document's language, `lang` on text in other languages, Korean word breaking |
 | 2026-10-10 | trivial | Reviewed in the full re-measure; status line and this table added; summarized in [typography-parity.md](typography-parity.md) and [localization-parity.md](localization-parity.md) |
 | 2026-10-10 | minor | Updated (see git history) |
 | 2026-10-06 | major | Created: CJK typesetting plan and status (the Japanese/CJK feature set) |

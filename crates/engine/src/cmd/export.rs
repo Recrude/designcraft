@@ -266,7 +266,7 @@ fn export_epub(s: &mut Session, p: &Value) -> Result<Value> {
     let opts = designcraft_epub::EpubOptions {
         title: p.get("title").and_then(Value::as_str).map(str::to_string),
         author: p.get("author").and_then(Value::as_str).map(str::to_string),
-        language: p.get("language").and_then(Value::as_str).unwrap_or("en").to_string(),
+        language: p.get("language").and_then(Value::as_str).unwrap_or_else(|| designcraft_epub::document_language(&st.doc)).to_string(),
         identifier: p.get("identifier").and_then(Value::as_str).map(str::to_string),
         cover,
         toc_title: p.get("tocTitle").and_then(Value::as_str).map(str::to_string),
@@ -888,6 +888,29 @@ mod text_tests {
         assert!(opf.contains("rendition:layout\">pre-paginated") && opf.contains("page2.xhtml"));
         let p1 = read(&mut z, "OEBPS/page1.xhtml");
         assert!(p1.contains("width=612, height=792") && p1.contains("Page one words"), "{p1}");
+    }
+
+    /// Without a `language`, EPUB and HTML take the document's ([Basic Paragraph]'s): a Korean
+    /// document exports as Korean, not English.
+    #[test]
+    fn epub_and_html_default_to_the_documents_language() {
+        let mut s = Session::new();
+        s.execute("file.new", &json!({"pages": 1})).unwrap();
+        s.execute("frame.create", &json!({"rect": [72, 72, 400, 200], "content": "text", "text": "한국어 문장", "caret": false})).unwrap();
+        let lang = |s: &mut Session| {
+            let r = s.execute("file.exportEpub", &json!({})).unwrap();
+            let mut z = unzip(r["base64"].as_str().unwrap());
+            read(&mut z, "OEBPS/content.opf").split("<dc:language>").nth(1).and_then(|r| r.split('<').next()).unwrap_or_default().to_string()
+        };
+        assert_eq!(lang(&mut s), "en-US");
+        s.execute("style.paragraph.edit", &json!({"name": "[Basic Paragraph]", "chars": {"language": "Korean"}})).unwrap();
+        assert_eq!(lang(&mut s), "ko");
+        let html = s.execute("file.exportHtml", &json!({})).unwrap()["text"].as_str().unwrap().to_string();
+        assert!(html.contains("<html lang=\"ko\">"), "{html}");
+        // An explicit language still wins.
+        let r = s.execute("file.exportEpub", &json!({"language": "en"})).unwrap();
+        let mut z = unzip(r["base64"].as_str().unwrap());
+        assert!(read(&mut z, "OEBPS/content.opf").contains("<dc:language>en</dc:language>"));
     }
 
     /// #775: the fallback follows the font's class, and embedFonts packages the stylesheet's fonts
