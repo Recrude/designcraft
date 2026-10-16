@@ -48,8 +48,9 @@ pub struct EmbeddedFont {
     pub data: Vec<u8>,
 }
 
-/// The `(family, style)` pairs the stylesheet names, one each, in style order: the fonts an
-/// export can embed.
+/// The `(family, style)` pairs the stylesheet and the text name, one each: the paragraph styles'
+/// in style order, then those text is set in (character styles, local formatting), a composite
+/// font as its members (see [`faces_of`]). The fonts an export can embed.
 pub fn stylesheet_fonts(doc: &Document) -> Vec<(String, String)> {
     let st: &Styles = &doc.styles;
     let mut out: Vec<(String, String)> = Vec::new();
@@ -58,12 +59,84 @@ pub fn stylesheet_fonts(doc: &Document) -> Vec<(String, String)> {
             continue;
         }
         let (_, cp) = st.resolve_para_style(&ps.name);
-        let f = (cp.font_family.clone(), cp.font_style.clone());
+        push_faces(doc, &cp.font_family, &cp.font_style, &mut out);
+    }
+    for story in doc.stories.values() {
+        story_fonts(doc, story, 0, &mut out);
+    }
+    out
+}
+
+/// Adds the faces `family` `style` stands for to `out`, each once.
+fn push_faces(doc: &Document, family: &str, style: &str, out: &mut Vec<(String, String)>) {
+    for f in faces_of(doc, family, style) {
+        if !f.0.is_empty() && !out.contains(&f) {
+            out.push(f);
+        }
+    }
+}
+
+/// The faces `st`'s text is set in (its tables' and notes' too), added to `out`.
+fn story_fonts(doc: &Document, st: &Story, depth: usize, out: &mut Vec<(String, String)>) {
+    if depth > MAX_DEPTH {
+        return;
+    }
+    let ranges = st.para_ranges();
+    let mut pi = 0;
+    for (rr, f) in st.runs() {
+        // The paragraph the run starts in (runs and paragraphs both go in text order).
+        while ranges.get(pi + 1).is_some_and(|r| r.start <= rr.start) {
+            pi += 1;
+        }
+        let Some(pf) = st.paras.get(pi) else { break };
+        let (_, base) = doc.styles.resolve_para(pf);
+        let cp = doc.styles.resolve_char(&base, f);
+        push_faces(doc, &cp.font_family, &cp.font_style, out);
+    }
+    for t in st.tables.values() {
+        for c in &t.cells {
+            story_fonts(doc, &c.text, depth + 1, out);
+        }
+    }
+    for n in &st.notes {
+        story_fonts(doc, &n.text, depth + 1, out);
+    }
+}
+
+/// The faces `family` `style` stands for: itself, or a composite font's member faces (named
+/// `CompositeFont/…` or by its name, as composition finds them), the Latin's first, then the
+/// figures', the other character sets' and the base's.
+fn faces_of(doc: &Document, family: &str, style: &str) -> Vec<(String, String)> {
+    let name = family.trim_start_matches("CompositeFont/");
+    let Some(cf) = doc.styles.composite_fonts.iter().find(|f| f.name == name) else {
+        return vec![(family.to_string(), style.to_string())];
+    };
+    let mut out: Vec<(String, String)> = Vec::new();
+    let sets = cf.entries.iter().filter(|e| !e.characters.is_empty());
+    let base = cf.entries.iter().filter(|e| e.characters.is_empty());
+    for e in ['H', '0'].into_iter().filter_map(|c| cf.entry(c)).chain(sets).chain(base) {
+        let f = (e.family.clone(), e.style.clone());
         if !f.0.is_empty() && !out.contains(&f) {
             out.push(f);
         }
     }
     out
+}
+
+/// `font-family` for text in `family` (a composite font as its members' families: reading systems
+/// take each character from the first that has it) with a generic fallback: the last member's,
+/// which sets the text the others don't cover.
+fn family_css(doc: &Document, family: &str, style: &str, generics: &BTreeMap<String, String>) -> String {
+    let faces = faces_of(doc, family, style);
+    let mut names: Vec<String> = Vec::new();
+    for (f, _) in &faces {
+        let quoted = format!("\"{}\"", css_string(f));
+        if !names.contains(&quoted) {
+            names.push(quoted);
+        }
+    }
+    let last = faces.last().map_or(family, |f| f.0.as_str());
+    format!("font-family: {}, {}; ", names.join(", "), generic_family(last, generics))
 }
 
 /// The CSS generic family for `family`: the known one, else a guess from the name
@@ -415,7 +488,7 @@ fn hex(doc: &Document, swatch: &str, tint: f32) -> Option<String> {
 }
 
 fn char_css(doc: &Document, c: &CharProps, base_size: f64, generics: &BTreeMap<String, String>, out: &mut String) {
-    let _ = write!(out, "font-family: \"{}\", {}; ", css_string(&c.font_family), generic_family(&c.font_family, generics));
+    out.push_str(&family_css(doc, &c.font_family, &c.font_style, generics));
     // The face's own weight, so an embedded Semibold or Light face is the one chosen.
     let (weight, style) = css_weight_style(&c.font_style);
     let _ = write!(out, "font-weight: {weight}; font-style: {style}; ");
@@ -512,6 +585,9 @@ fn stylesheet_with(doc: &Document, generics: &BTreeMap<String, String>, fonts: &
         }
         let mut rule = String::new();
         let c = &cs.chars;
+        if let Some(family) = &c.font_family {
+            rule.push_str(&family_css(doc, family, c.font_style.as_deref().unwrap_or("Regular"), generics));
+        }
         if let Some(f) = &c.font_style {
             let f = f.to_lowercase();
             if f.contains("bold") {
@@ -537,8 +613,11 @@ fn stylesheet_with(doc: &Document, generics: &BTreeMap<String, String>, fonts: &
     css
 }
 
-fn override_css(doc: &Document, o: &CharAttrs) -> String {
+fn override_css(doc: &Document, o: &CharAttrs, generics: &BTreeMap<String, String>) -> String {
     let mut s = String::new();
+    if let Some(family) = &o.font_family {
+        s.push_str(&family_css(doc, family, o.font_style.as_deref().unwrap_or("Regular"), generics));
+    }
     if let Some(f) = &o.font_style {
         let f = f.to_lowercase();
         if f.contains("bold") {
@@ -630,6 +709,8 @@ struct StoryWriter<'a, 'f> {
     cc: BTreeMap<&'a str, String>,
     /// EPUB structural semantics (`epub:type`); plain HTML doesn't declare the namespace.
     epub: bool,
+    /// Generic CSS family per font family, for local formatting's `font-family`.
+    generics: BTreeMap<String, String>,
     /// Notes written so far, for unique element ids.
     footnote_ids: u32,
     endnote_ids: u32,
@@ -651,12 +732,13 @@ struct StoryWriter<'a, 'f> {
 }
 
 impl<'a, 'f> StoryWriter<'a, 'f> {
-    fn new(doc: &'a Document, epub: bool, img_src: Option<&'f dyn Fn(&str, &str, &[u8]) -> String>) -> Self {
+    fn new(doc: &'a Document, epub: bool, generics: &BTreeMap<String, String>, img_src: Option<&'f dyn Fn(&str, &str, &[u8]) -> String>) -> Self {
         StoryWriter {
             doc,
             pc: para_classes(&doc.styles),
             cc: char_classes(&doc.styles),
             epub,
+            generics: generics.clone(),
             footnote_ids: 0,
             endnote_ids: 0,
             next_footnote: 1,
@@ -811,7 +893,7 @@ impl<'a, 'f> StoryWriter<'a, 'f> {
             } else {
                 ("span", String::new())
             };
-            let style = override_css(doc, &f.over);
+            let style = override_css(doc, &f.over, &self.generics);
             let style_attr = if style.is_empty() { String::new() } else { format!(" style=\"{}\"", xml_attr(&style)) };
             if cls.is_empty() && style_attr.is_empty() {
                 out.push_str(&t);
@@ -1018,7 +1100,7 @@ fn run_text(doc: &Document, raw: &str) -> String {
 /// One story as XHTML: paragraphs, tables, and each footnote after the paragraph that refers to
 /// it. Endnote references link to the endnotes section that the full export ends with.
 pub fn story_html(doc: &Document, sid: StoryId) -> String {
-    StoryWriter::new(doc, true, None).story(sid, None)
+    StoryWriter::new(doc, true, &BTreeMap::new(), None).story(sid, None)
 }
 
 /// Where the EPUB body splits into chapter files: before each `h1`.
@@ -1276,10 +1358,11 @@ struct Body<'a> {
 }
 
 /// The content in reading order as HTML sections and figures; `img_src` names each image
-/// (a package path, or a data URI for single-file HTML).
-fn body_html<'a>(doc: &'a Document, epub: bool, img_src: &dyn Fn(&str, &str, &[u8]) -> String) -> Body<'a> {
+/// (a package path, or a data URI for single-file HTML); `generics` gives font families their
+/// generic CSS fallbacks.
+fn body_html<'a>(doc: &'a Document, epub: bool, generics: &BTreeMap<String, String>, img_src: &dyn Fn(&str, &str, &[u8]) -> String) -> Body<'a> {
     let order = reading_order(doc);
-    let mut writer = StoryWriter::new(doc, epub, Some(img_src));
+    let mut writer = StoryWriter::new(doc, epub, generics, Some(img_src));
     let mut body = String::new();
     let mut toc = toc_entries(doc, &order);
     for (k, b) in order.iter().enumerate() {
@@ -1326,7 +1409,7 @@ fn body_html<'a>(doc: &'a Document, epub: bool, img_src: &dyn Fn(&str, &str, &[u
 /// Placed and anchored images (not video or sound) without alt text, by asset name: they are exported as
 /// decorative (`alt=""`), which an export can report.
 pub fn images_without_alt(doc: &Document) -> Vec<String> {
-    body_html(doc, true, &|name, _, _| name.to_string()).no_alt
+    body_html(doc, true, &BTreeMap::new(), &|name, _, _| name.to_string()).no_alt
 }
 
 /// Options for [`export_html`].
@@ -1344,7 +1427,7 @@ pub fn export_html(doc: &Document, opts: &HtmlOptions) -> String {
     let title = opts.title.clone().unwrap_or_else(|| doc.title.clone());
     let language = opts.language.as_deref().unwrap_or("en");
     let lang = language_tag(language);
-    let body = body_html(doc, false, &|_, mime, data| format!("data:{mime};base64,{}", base64(data))).html;
+    let body = body_html(doc, false, &opts.generic_families, &|_, mime, data| format!("data:{mime};base64,{}", base64(data))).html;
     format!(
         "<!DOCTYPE html>\n<html lang=\"{lang}\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<meta name=\"generator\" content=\"DesignCraft\">\n<title>{}</title>\n<style>\nbody {{ max-width: 40em; margin: 2em auto; padding: 0 1em; }}\nfigure {{ margin: 1em 0; }} figure img {{ max-width: 100%; height: auto; }}\n{}</style>\n</head>\n<body>\n{body}</body>\n</html>\n",
         xml_text(&title),
@@ -1371,7 +1454,7 @@ pub fn export_epub(doc: &Document, opts: &EpubOptions) -> Result<Vec<u8>, EpubEr
     let title = opts.title.clone().unwrap_or_else(|| doc.title.clone());
     let id = identifier(doc, opts, &title);
     let modified = modified(doc, opts);
-    let Body { html: body, images, toc, .. } = body_html(doc, true, &|name, _, _| name.to_string());
+    let Body { html: body, images, toc, .. } = body_html(doc, true, &opts.generic_families, &|name, _, _| name.to_string());
     let lang = language_tag(&opts.language);
     // One file per chapter (split before each h1), so e-readers needn't load the whole book.
     let chapters: Vec<String> = split_chapters(&body)
@@ -1889,6 +1972,57 @@ mod tests {
             assert!(!classes[..k].contains(c), "class `{c}` shared: {classes:?}");
             assert_eq!(css.matches(&format!("p.{c} {{")).count(), 1, "one rule for `{c}`:\n{css}");
         }
+    }
+
+    /// Fonts set by a character style or local formatting reach the stylesheet, the inline styles
+    /// and the fonts to embed (they were dropped); a composite font becomes its members'
+    /// families, the Latin's first, instead of a family no reading system has.
+    #[test]
+    fn character_local_and_composite_fonts_are_kept() {
+        use designcraft_doc::cjk::{CompositeFont, CompositeFontEntry};
+        let mut d = Document::new(&NewDocument::default());
+        let lid = d.default_layer();
+        d.styles_mut().character.push(designcraft_doc::CharacterStyle {
+            name: "Code".into(),
+            based_on: None,
+            chars: CharAttrs { font_family: Some("Source Code Pro".into()), ..Default::default() },
+            shortcut: String::new(),
+        });
+        d.styles_mut().composite_fonts.push(CompositeFont {
+            name: "KR".into(),
+            entries: vec![
+                CompositeFontEntry { family: "Base Gothic".into(), ..Default::default() },
+                CompositeFontEntry { characters: "0123456789".into(), family: "Figure Sans".into(), ..Default::default() },
+                CompositeFontEntry { characters: "ABCHabcx".into(), family: "Latin Serif".into(), ..Default::default() },
+            ],
+        });
+        let text = "Plain code local\n한글 Latin 2026";
+        let (_, sid) = d.add_text_frame(SpreadRef::Doc(0), Rect::new(36.0, 36.0, 300.0, 200.0), lid, text, ParaFormat::default()).unwrap();
+        let st = d.story_mut(sid).unwrap();
+        let at = |w: &str| text.find(w).unwrap();
+        st.format_chars(at("code")..at("code") + 4, |f| f.style = "Code".into());
+        st.format_chars(at("local")..at("local") + 5, |f| f.over.font_family = Some("Montserrat".into()));
+        st.format_chars(at("한글")..text.len(), |f| f.over.font_family = Some("CompositeFont/KR".into()));
+
+        let css = stylesheet(&d);
+        let rule = css.lines().find(|l| l.starts_with("span.code {")).unwrap_or_default();
+        assert!(rule.contains("font-family: \"Source Code Pro\", monospace;"), "{css}");
+        let html = export_html(&d, &HtmlOptions::default());
+        assert!(html.contains("style=\"font-family: &quot;Montserrat&quot;, serif;\">local</span>"), "{html}");
+        assert!(html.contains("font-family: &quot;Latin Serif&quot;, &quot;Figure Sans&quot;, &quot;Base Gothic&quot;, sans-serif;"), "{html}");
+        assert!(!html.contains("CompositeFont"), "{html}");
+        let fonts = stylesheet_fonts(&d);
+        for family in ["Source Code Pro", "Montserrat", "Latin Serif", "Figure Sans", "Base Gothic"] {
+            assert!(fonts.contains(&(family.to_string(), "Regular".to_string())), "{family}: {fonts:?}");
+        }
+        assert!(!fonts.iter().any(|(f, _)| f.contains("KR")), "{fonts:?}");
+        // A paragraph style set in the composite font, named without the prefix.
+        if let Some(basic) = d.styles_mut().paragraph.iter_mut().find(|s| s.name == story::BASIC_PARAGRAPH) {
+            basic.chars.font_family = Some("KR".into());
+        }
+        let css = stylesheet(&d);
+        let rule = css.lines().find(|l| l.starts_with("p.basic-paragraph {")).unwrap_or_default();
+        assert!(rule.contains("font-family: \"Latin Serif\", \"Figure Sans\", \"Base Gothic\", sans-serif;"), "{css}");
     }
 
     #[test]
