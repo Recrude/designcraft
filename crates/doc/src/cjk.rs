@@ -100,6 +100,18 @@ pub enum WarichuAlignment {
     Justify,
 }
 
+/// What can't start a line in CJK text, from the W3C layout requirements (JLREQ, CLREQ, KLREQ):
+/// closing brackets and quotation marks, dividing punctuation, middle dots, full stops and commas,
+/// hyphens and wave dashes. The named sets and the rules used without a set share these lists.
+pub const NO_LINE_START: &str = "、。，．・：；？！）」』】〕〉》｝］〙〗’”·‐〜～!),.:;?]}";
+/// What a hard set (and the rules used without a set) also keeps from starting a line: small kana,
+/// the prolonged sound mark and iteration marks.
+pub const NO_LINE_START_HARD: &str = "ーぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ々〻ゝゞヽヾ";
+/// What can't end a line: opening brackets and quotation marks.
+pub const NO_LINE_END: &str = "（「『【〔〈《｛［〘〖‘“([{";
+/// Dashes and leaders a line never splits from the same character beside it (——, ……, ‥‥).
+pub const INSEPARABLE: &str = "—―…‥";
+
 impl Kinsoku {
     /// Clean-room Unicode rules for the named CJK sets. Explicit document tables
     /// are imported separately and always take precedence over these defaults.
@@ -117,17 +129,11 @@ impl Kinsoku {
             | "kKoreanKinsokuName" => false,
             _ => return None,
         };
-        let mut no_start = "、。，．・：；？！）」』】〕〉》｝］〙〗’”!),.:;?]}".to_string();
+        let mut no_start = NO_LINE_START.to_string();
         if hard {
-            no_start.push_str("ーぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ々〻ゝゞヽヾ");
+            no_start.push_str(NO_LINE_START_HARD);
         }
-        Some(Self {
-            name: name.into(),
-            no_start,
-            no_end: "（「『【〔〈《｛［〘〖‘“([{".into(),
-            hanging: "、。，．,.".into(),
-            inseparable: String::new(),
-        })
+        Some(Self { name: name.into(), no_start, no_end: NO_LINE_END.into(), hanging: "、。，．,.".into(), inseparable: INSEPARABLE.into() })
     }
 }
 
@@ -159,4 +165,30 @@ pub struct MojikumiAki {
     pub maximum: f64,
     pub priority: i16,
     pub does_not_float: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The named sets keep closing quotation marks, middle dots and wave dashes off a line's start,
+    /// opening quotation marks off its end, and dash and leader pairs together (KLREQ 7.1.2–7.1.4).
+    #[test]
+    fn named_sets_follow_the_layout_requirements() {
+        for name in ["KoreanKinsoku", "SoftKinsoku", "HardKinsoku", "SimplifiedChineseKinsoku"] {
+            let k = Kinsoku::named(name).unwrap();
+            for c in ['”', '’', '·', '〜', '～', '」', '。'] {
+                assert!(!k.allows('가', c), "{name}: {c} starts a line");
+            }
+            for c in ['“', '‘', '「'] {
+                assert!(!k.allows(c, '가'), "{name}: {c} ends a line");
+            }
+            for c in ['…', '‥', '—'] {
+                assert!(!k.allows(c, c) && k.allows('가', c), "{name}: {c}");
+            }
+            assert!(k.allows('가', '나'));
+        }
+        assert!(!Kinsoku::named("HardKinsoku").unwrap().allows('가', 'ー'));
+        assert!(Kinsoku::named("KoreanKinsoku").unwrap().allows('가', 'ー'), "soft sets let the prolonged sound mark start a line");
+    }
 }

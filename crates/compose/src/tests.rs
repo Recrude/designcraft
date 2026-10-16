@@ -4633,10 +4633,12 @@ const KO_HANJA: &str = "大韓民國 憲法은 國民의 權利를 保障한다 
 const KO_PUNCT: &str = "가나다라마。바사아자차」카타파하가、나다라마바。사아자차카」타파하가나、다라마바사。아자차카타」파하가나다、";
 /// Syllables for words wider than the frame.
 const KO_LONG: &str = "가나다라마바사아자차카타파하」";
+/// Quotation marks, middle dots, wave dashes and leaders between syllables (KLREQ 7.1.2–7.1.4).
+const KO_QUOTES: &str = "가나다“라마바”사아자‘차카타’파하·가나다〜라마바～사아자……차카타‥‥파하——";
 
 /// A Korean paragraph in a narrow frame (70 pt), set in a stand-in font covering the samples.
 fn korean_doc(text: &str, language: &str, para: ParaAttrs) -> (Document, StoryId) {
-    let chars: Vec<char> = [KO_WORDS, KO_HANJA, KO_PUNCT, KO_LONG].concat().chars().collect();
+    let chars: Vec<char> = [KO_WORDS, KO_HANJA, KO_PUNCT, KO_LONG, KO_QUOTES, "中文"].concat().chars().collect();
     let font = designcraft_fonts::testing::font_with("DC Test Korean", &chars).unwrap();
     designcraft_fonts::FontDb::global().add_font(font);
     let (mut d, sid, _) = doc_with(text, Rect::new(36.0, 36.0, 106.0, 400.0), para);
@@ -4708,6 +4710,35 @@ fn hanja_in_korean_text_breaks_at_spaces() {
     // Han in Japanese text breaks between characters.
     let (d, sid) = korean_doc(KO_HANJA, "Japanese", para);
     assert!(!lines_starting_mid_word(&d, sid, KO_HANJA).is_empty());
+}
+
+/// Without a kinsoku set, text set character by character (Korean on request, Chinese always)
+/// keeps closing quotation marks, middle dots and wave dashes off a line's start, opening
+/// quotation marks off its end, and ……, ‥‥ and —— whole, wherever the lines fall.
+#[test]
+fn quotation_marks_and_leaders_keep_kinsoku() {
+    let syllables: Vec<char> = KO_LONG.chars().collect();
+    for (language, prefix_of) in [("Korean", &syllables), ("Simplified Chinese", &vec!['中', '文'])] {
+        for n in 0..12 {
+            let prefix: String = prefix_of.iter().cycle().take(n).collect();
+            let text = format!("{prefix}{KO_QUOTES}{KO_QUOTES}");
+            let para = ParaAttrs { korean_char_breaks: Some(true), ..Default::default() };
+            let (d, sid) = korean_doc(&text, language, para);
+            let cs = compose_story(&d, sid, &ComposeOptions::default());
+            let lines = all_lines(&cs);
+            assert!(lines.len() > 2, "wraps");
+            for l in lines.iter().skip(1) {
+                let (before, line) = (&text[..l.range.start], &text[l.range.clone()]);
+                let at = format!("{language} +{n}: {before:?} | {line:?}");
+                assert!(!line.starts_with(['”', '’', '·', '〜', '～']), "starts a line: {at}");
+                assert!(!before.ends_with(['“', '‘']), "ends a line: {at}");
+                for pair in ["……", "‥‥", "——"] {
+                    let c = pair.chars().next().unwrap();
+                    assert!(!(before.ends_with(c) && line.starts_with(c)), "splits {pair}: {at}");
+                }
+            }
+        }
+    }
 }
 
 #[test]

@@ -256,8 +256,9 @@ const EMERGENCY_PENALTY: f64 = 5000.0;
 
 /// Does the glyph force a line end after it?
 /// A line may break between `a` and `b` in CJK text (any break next to an ideograph, kana or
-/// hangul), except where kinsoku forbids it: no line starts with closing punctuation, small
-/// kana or the prolonged sound mark, and none ends with opening brackets.
+/// hangul), except where kinsoku forbids it: no line starts with closing punctuation or quotation
+/// marks, middle dots, wave dashes, small kana or the prolonged sound mark, none ends with opening
+/// brackets or quotation marks, and dash and leader pairs (——, ……) stay together.
 pub fn cjk_break_between(a: char, b: char) -> bool {
     (is_cjk(a) || is_cjk(b)) && kinsoku_allows(a, b)
 }
@@ -266,10 +267,15 @@ fn is_cjk(c: char) -> bool {
     crate::upright_in_vertical(c) || matches!(c as u32, 0x3000..=0x303F)
 }
 
+/// The rules without a kinsoku set: a hard set's (see [`designcraft_doc::cjk::Kinsoku::named`]).
 fn kinsoku_allows(a: char, b: char) -> bool {
-    const NO_START: &str = "、。，．・：；？！ー）」』】〕〉》｝］〙〗ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ々〻ゝゞヽヾ!),.:;?]}";
-    const NO_END: &str = "（「『【〔〈《｛［〘〖([{";
-    !NO_START.contains(b) && !NO_END.contains(a)
+    use designcraft_doc::cjk::{NO_LINE_END, NO_LINE_START, NO_LINE_START_HARD};
+    !(NO_LINE_START.contains(b) || NO_LINE_START_HARD.contains(b) || NO_LINE_END.contains(a) || inseparable(a, b))
+}
+
+/// Are `a` and `b` a dash or leader pair a line never splits (——, ……, ‥‥)?
+fn inseparable(a: char, b: char) -> bool {
+    a == b && designcraft_doc::cjk::INSEPARABLE.contains(a)
 }
 
 /// Hangul, and Han ideographs (hanja) in Korean text: Korean is set word by word (KLREQ), so
@@ -447,7 +453,9 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
                 p.hang = right_hang(g, sp);
                 p.edge_elastic = crate::mojikumi::end_elastic(g, sp.justify, sp.kinsoku_priority != 3);
                 push_inword(&mut it, &mut ig, p, i + 1, sp);
-            } else if matches!(g.ch, '\u{2013}' | '\u{2014}' | '/') || g.break_after.unwrap_or_else(|| cjk_break(g, &glyphs[i + 1], sp)) {
+            } else if (matches!(g.ch, '\u{2013}' | '\u{2014}' | '/') && !glyphs.get(i + 1).is_some_and(|n| inseparable(g.ch, n.ch)))
+                || g.break_after.unwrap_or_else(|| cjk_break(g, &glyphs[i + 1], sp))
+            {
                 let mut p = Item::penalty(0.0, 0.0, false);
                 p.hang = right_hang(g, sp);
                 p.edge_elastic = crate::mojikumi::end_elastic(g, sp.justify, sp.kinsoku_priority != 3);
