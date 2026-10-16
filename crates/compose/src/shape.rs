@@ -694,18 +694,13 @@ fn is_mark(c: char) -> bool {
 fn composite_props(db: &ScopedFonts<'_>, base: &CharProps, entry: Option<&designcraft_doc::cjk::CompositeFontEntry>) -> CharProps {
     let mut p = base.clone();
     if let Some(e) = entry {
+        let (size, h_scale, v_scale) = e.scales();
         p.font_family.clone_from(&e.family);
         p.font_style.clone_from(&e.style);
-        p.size *= e.relative_size.clamp(0.01, 100.0);
-        p.h_scale *= e.horizontal_scale.clamp(0.01, 100.0);
-        p.v_scale *= e.vertical_scale.clamp(0.01, 100.0);
-        p.baseline_shift += base.size * e.baseline_shift;
-        if e.scale_option {
-            let face = db.face(&p.font_family, &p.font_style);
-            let (asc, desc) = face.vertical_metrics();
-            let center = (asc - desc) / (2.0 * (asc + desc).max(1e-9));
-            p.baseline_shift += (base.size * base.v_scale - p.size * p.v_scale) * center;
-        }
+        p.size *= size;
+        p.h_scale *= h_scale;
+        p.v_scale *= v_scale;
+        p.baseline_shift += e.baseline_offset(base.size, base.v_scale, || db.face(&e.family, &e.style).ascent_descent_center());
     }
     p
 }

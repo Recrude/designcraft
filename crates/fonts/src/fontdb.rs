@@ -284,6 +284,11 @@ impl FontFace {
     pub fn vertical_metrics(&self) -> (f64, f64) {
         (self.ascent, self.descent)
     }
+    /// The middle of the ascent–descent box above the baseline, as a fraction of the box's height:
+    /// the point a composite font's Scale Option scales a member about.
+    pub fn ascent_descent_center(&self) -> f64 {
+        (self.ascent - self.descent) / (2.0 * (self.ascent + self.descent).max(1e-9))
+    }
     /// Every mapped character and its glyph id, sorted by code point (the Glyphs panel).
     pub fn chars(&self) -> Vec<(char, u32)> {
         let Some(f) = self.skrifa() else { return vec![] };
@@ -2081,7 +2086,7 @@ fn has_serifs(face: &FontFace) -> Option<bool> {
 }
 
 /// Glyph `gid`'s outline as the font draws it, in font units, y-down (flipped).
-fn font_outline(face: &FontFace, gid: u32) -> BezPath {
+pub(crate) fn font_outline(face: &FontFace, gid: u32) -> BezPath {
     let mut pen = FlipPen(BezPath::new());
     if let Some(f) = face.skrifa()
         && let Some(g) = f.outline_glyphs().get(GlyphId::new(gid))

@@ -38,6 +38,24 @@ impl Default for CompositeFontEntry {
         }
     }
 }
+impl CompositeFontEntry {
+    /// Size, horizontal and vertical scale as composition applies them (each clamped to
+    /// 1–10,000 %).
+    pub fn scales(&self) -> (f64, f64, f64) {
+        (self.relative_size.clamp(0.01, 100.0), self.horizontal_scale.clamp(0.01, 100.0), self.vertical_scale.clamp(0.01, 100.0))
+    }
+
+    /// The baseline shift (up) the entry gives text of `size` at vertical scale `v_scale`: its own
+    /// shift and, with Scale Option, the height its scaling gains or loses about `center` (the
+    /// middle of the member font's ascent–descent box above the baseline, as a fraction of that
+    /// box's height), which is read only then. Composition and composite font fitting share it.
+    pub fn baseline_offset(&self, size: f64, v_scale: f64, center: impl FnOnce() -> f64) -> f64 {
+        let (s, _, v) = self.scales();
+        let shift = size * self.baseline_shift;
+        if self.scale_option { shift + (size * v_scale - size * s * v_scale * v) * center() } else { shift }
+    }
+}
+
 impl CompositeFont {
     pub fn entry(&self, c: char) -> Option<&CompositeFontEntry> {
         self.entries

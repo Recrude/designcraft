@@ -1,6 +1,6 @@
 # CJK typesetting plan
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** trivial (status line and revision history added; content unchanged in the 2026-10-10 review) · **Target:** Adobe InDesign 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-16 · **Change:** minor (composite fonts: measured fitting of the Latin to the Hangul) · **Target:** Adobe InDesign 2026
 
 Goal: the Chinese, Japanese and Korean typesetting that InDesign offers with its East Asian
 feature set (the "Japanese/CJK" feature set, `Feature Set Locale Setting` 257), so that a
@@ -46,7 +46,7 @@ presets or tables are copied. Our default mojikumi and kinsoku tables are built 
 | Shatai | magnification, angle, adjust rotation and adjust tsume on screen, in PDF, outlines and type on a path (`type.shatai`, IDML `Shatai*`) |
 | Rotate roman, roman word break | half-width characters upright in vertical text (`type.rotateRoman`, IDML `RotateSingleByteCharacters`); breaks between Latin, Greek or Cyrillic letters without a hyphen (`type.romanWordBreak`, IDML `AllowArbitraryHyphenation`) |
 | Grid alignment | against the baseline grid: roman baseline, em box top / centre / bottom, ICF top / bottom; first line only; gyoudori (auto or N grid lines) and paragraph gyoudori (`type.gridSettings`, IDML `GridAlignment`, `GridGyoudori`, `ParagraphGyoudori`). No frame grid; vertical frames have no baseline grid |
-| Composite fonts | done: model, `style.compositeFont.*`, shaping, IDML, font list, replace and Preflight; no dialog |
+| Composite fonts | done: model, `style.compositeFont.*`, shaping, IDML, font list, replace and Preflight; measured fitting (`style.compositeFont.fit`: Latin and figure sizes and baseline shifts against the Hangul, beyond InDesign); no dialog |
 | Languages | Japanese, Korean, Simplified and Traditional Chinese reach the shaper (`locl`), font fallback, line breaking and typographer's quotes; IDML language names are kept as written; locale codes (`ja_JP`, `ko-KR`, `de_DE_2006`) are their language and region, and Chinese is also recognised in its common spellings ("Simplified Chinese", "Chinese (Traditional)", `zh_CN`, `zh-Hant`) |
 | Missing glyphs | as in InDesign: characters the applied font lacks are drawn as its missing-glyph box (screen and PDF) and listed by Preflight; the document setting Draw Missing Glyphs from Fallback Fonts (Preferences › Composition, off in new documents and IDML imports, on in documents saved before it existed) draws them from fallback fonts instead |
 | Font menus | Western families first, then Japanese, Simplified Chinese, Traditional Chinese and Korean groups (from the font's `meta` languages, CJK family names, OS/2 code pages, else its coverage); CJK families under their native names unless Preferences › Type › Show Font Names in English; the order is recalled from InDesign, not observed |
@@ -158,6 +158,12 @@ Jidori, tsume, aki before and after, em-box alignment and the other leading mode
 - **Composite fonts** (a named font made of a base font plus fonts for character sets, with size,
   baseline, x/y scale and centre adjustments) are resolved before shaping, read from and written
   to IDML and listed, replaced and preflighted by their member fonts; PDF embeds the member fonts.
+  `style.compositeFont.fit` proposes the Latin and figure entries' size and baseline shift: the
+  Hangul's ink extent (medians over KS X 1001's 2,350 syllables) and the Latin's cap and x heights
+  are measured from the outlines, and three candidates (the reference's cap height and cap centre,
+  its x height, or the current size re-centred) give the Latin the proportions a reference font's
+  own Latin has against its Hangul (the Hangul member itself unless named). It only proposes;
+  `style.compositeFont.set` applies a candidate, so the result is ordinary IDML values.
   Remaining: the Composite Fonts dialog, and the predefined character classes (kanji, kana,
   full-width symbols, punctuation, Latin, numerals) beside custom sets.
 - **Missing glyphs**: InDesign doesn't substitute fonts per character: a character the applied
@@ -292,6 +298,7 @@ Each follows what an InDesign user expects.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-16 | minor | Composite fonts: measured fitting (`style.compositeFont.fit`) |
 | 2026-10-10 | trivial | Reviewed in the full re-measure; status line and this table added; summarized in [typography-parity.md](typography-parity.md) and [localization-parity.md](localization-parity.md) |
 | 2026-10-10 | minor | Updated (see git history) |
 | 2026-10-06 | major | Created: CJK typesetting plan and status (the Japanese/CJK feature set) |

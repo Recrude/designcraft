@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 mod features;
+pub mod fit;
 mod fontdb;
 mod group;
 mod kind;

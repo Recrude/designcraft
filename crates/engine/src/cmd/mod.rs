@@ -9,6 +9,7 @@ pub(crate) mod captions;
 mod changes;
 mod color_theme;
 mod colorsettings;
+mod composite_fit;
 mod conditions;
 mod datamerge;
 mod edit;
@@ -224,6 +225,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(rulers::specs());
         v.extend(links::specs());
         v.extend(fonts::specs());
+        v.extend(composite_fit::specs());
         v.extend(spelling::specs());
         v.extend(datamerge::specs());
         v.extend(interactive::specs());
